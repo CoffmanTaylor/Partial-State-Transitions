@@ -14,15 +14,6 @@ pub trait PartialStateTransition<S, Args> {
     fn merge(input: S, result: Self::Striped) -> S;
 }
 
-pub fn apply_transition<T, S, Args>(start: S, args: Args) -> S
-where
-    T: PartialStateTransition<S, Args>,
-    S: Clone,
-{
-    let stripped = T::strip(start.clone());
-    T::merge(start, T::partial_call(stripped, args))
-}
-
 pub struct TransitionCache<T, S, Args>
 where
     T: PartialStateTransition<S, Args>,
@@ -106,14 +97,24 @@ mod hand_written {
         }
     }
 
-    #[test]
-    fn direct_call_on_is_even() {
-        let start = Example::new(42, false);
+    enum SetNumber {}
 
-        assert_eq!(
-            Example::new(42, true),
-            apply_transition::<IsEven, _, _>(start, ())
-        );
+    impl PartialStateTransition<Example, usize> for SetNumber {
+        type Striped = usize;
+
+        fn strip(input: Example) -> Self::Striped {
+            input.field_usize
+        }
+
+        fn partial_call(_input: Self::Striped, args: usize) -> Self::Striped {
+            args
+        }
+
+        fn merge(mut input: Example, result: Self::Striped) -> Example {
+            input.field_usize = result;
+
+            input
+        }
     }
 
     #[test]
@@ -159,6 +160,64 @@ mod hand_written {
         let res = cache.apply_transition(start, ());
 
         assert_eq!(Example::new(42, true), res);
+        assert_eq!(1, COUNT.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn can_use_transition_on_different_starts() {
+        let mut cache = TransitionCache::<IsEven, _, _>::new();
+
+        let start1 = Example::new(42, false);
+        let start2 = Example::new(43, true);
+
+        let res1 = cache.apply_transition(start1, ());
+        let res2 = cache.apply_transition(start2, ());
+
+        assert_eq!(Example::new(42, true), res1);
+        assert_eq!(Example::new(43, false), res2);
+    }
+
+    #[test]
+    fn transition_with_only_some_fields() {
+        let mut cache = TransitionCache::<SetNumber, _, _>::new();
+
+        let start = Example::new(42, false);
+
+        let res = cache.apply_transition(start, 38);
+
+        assert_eq!(Example::new(38, false), res);
+    }
+
+    #[test]
+    fn partial_transition() {
+        static COUNT: AtomicUsize = AtomicUsize::new(0);
+
+        enum SetNumber {}
+
+        impl PartialStateTransition<Example, usize> for SetNumber {
+            type Striped = usize;
+
+            fn strip(input: Example) -> Self::Striped {
+                input.field_usize
+            }
+
+            fn partial_call(_input: Self::Striped, args: usize) -> Self::Striped {
+                COUNT.fetch_add(1, Ordering::SeqCst);
+                args
+            }
+
+            fn merge(mut input: Example, result: Self::Striped) -> Example {
+                input.field_usize = result;
+
+                input
+            }
+        }
+
+        let mut cache = TransitionCache::<SetNumber, _, _>::new();
+
+        cache.apply_transition(Example::new(42, true), 1);
+        cache.apply_transition(Example::new(42, false), 1);
+
         assert_eq!(1, COUNT.load(Ordering::SeqCst));
     }
 }
